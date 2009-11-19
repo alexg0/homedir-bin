@@ -1,0 +1,72 @@
+#!/usr/bin/perl
+# based on prcs's ediff integration by Jesse N. Glick, Ulrich
+#
+# TODO: get ideas from:
+# http://svn.clkao.org/svnweb/svk/checkout/trunk/utils/svk-ediff.el?rev=368
+#
+use strict;
+use Cwd qw(cwd);
+my $gnuclient = 'gnuclient';
+
+my $pwd = cwd;
+
+# Get the arguments
+my ($Base_file, $Theirs_file, $Yours_file, $Merged_file) = @ARGV;
+
+# Make paths absolute (could use &File::PathConvert::rel2abs)
+for ($Base_file, $Theirs_file, $Yours_file, $Merged_file) {
+  $_ = $pwd . '/' . $_ unless m!^/!;
+}
+
+my $signal       = 'USR1';
+my $command;
+
+$command ='';
+
+if ($ENV{DISPLAY}) {
+  $command .= "(make-frame)\n";
+}
+
+if ($Base_file ne '/dev/null') {
+  warn "merge with base $Base_file";
+  $command .= <<LISP;
+(ediff-merge-files-with-ancestor
+ "$Theirs_file" "$Yours_file" "$Base_file" nil "$Merged_file")
+LISP
+} else {
+  $command .= <<LISP;
+(ediff-merge-files "$Theirs_file" "$Yours_file" nil "$Merged_file")
+LISP
+}
+
+# set up the signal handlers
+$SIG{$signal} = sub {
+  print STDERR "Emerge $$ done
+";
+  exit 0;
+};
+
+$SIG{CHLD} = sub {
+  my $waitedpid = wait;
+  my $code      = ($? >> 8);
+  my $sig       = ($? & 0xFF);
+
+  # does not seem to correspond to reality!
+  return;
+
+  if ($code) {
+    die "Merge failed (status $code, signal $sig)";
+    # We should restore the working file here ;-)
+  }
+};
+
+my $pid;
+
+if (!defined($pid = fork)) {
+  die  "cannot fork: $!";
+} elsif ($pid) {
+  print STDERR "Started $pid, Try 'kill -$signal $$' to terminate if things mess up";
+  sleep 5 while 1;
+} else {
+  exec $gnuclient, '--eval', $command or die "Could not run gnudoit: $!";
+}

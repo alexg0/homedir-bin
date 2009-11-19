@@ -1,0 +1,44 @@
+#!/bin/sh
+
+killproc() {		# kill the named process(es)
+	pid=`/usr/bin/ps -u $USER |
+	     /usr/bin/grep $1 |
+	     /usr/bin/sed -e 's/^  *//' -e 's/ .*//'`
+	[ "$pid" != "" ] && kill $pid
+}
+
+
+# Start/stop processes required for perforce server
+
+P4DBIN=${GLEBHOME}/local/bin/p4d
+P4PORT=6888
+P4ROOT=${HOME}/local/p4root
+P4LOGDIR=${HOME}/var/p4
+P4LOG=${P4LOGDIR}/p4.log
+P4LOGCHECK=${P4LOGDIR}/p4.checkpoint.log
+P4LOGLAST=${P4LOG}.last
+
+case "$1" in
+'start')
+
+	if [ -x ${P4DBIN} ] ; then
+		${P4DBIN} -r ${P4ROOT} -p ${P4PORT} 1> ${P4LOG} 2>&1 &
+	fi
+	;;
+
+'stop')
+	killproc p4d
+	rm -f ${P4LOGLAST}
+	mv ${P4LOG} ${P4LOGLAST}
+	;;
+
+'checkpoint')
+	if [ -x ${P4DBIN} ] ; then
+		${P4DBIN} -r ${P4ROOT} -jc 1> ${P4LOGCHECK} 2>&1
+	fi
+
+	;;
+*)
+	echo "Usage: p4init { start | stop | checkpoint }"
+	;;
+esac

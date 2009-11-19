@@ -1,0 +1,46 @@
+#!/usr/bin/perl
+
+if ($ARGV[0] eq "-n") {
+  $NONAMES = shift;
+} else {
+  require Socket;
+  Socket->import("inet_aton", 'AF_INET');
+}
+
+@ARGV = '/service/axfrdns/log/main/current' 
+  if @ARGV == 0 && -t STDIN;
+
+%typename = (1 => "A", 2 => "NS", 5 => "CNAME", 6 => "SOA",
+             12 => "PTR", 13 => "HINFO", 15 => "MX", 16 => "TXT",
+             17 => "RP", 24 => "SIG", 25 => "KEY", 28 => "AAAA",
+             252 =>  "AXFR", 255 => "ANY", 
+            );
+
+$|=1;
+
+while (<>) {
+  
+  chomp;
+  my ($tai64, $remote, $type, $zone) = split / /, $_, 4;
+  my ($addr, $port, $qid) = split /:/, $remote;
+  next if $remote eq "tcpserver:";
+  my $time = timecvt($tai64);
+  $addr = join ".", map hex(substr($addr, $_*2, 2)), 0..3;
+  $_ = hex for $port, $qid, $type;
+  $type = $typename{$type} || $type;
+
+  unless ($NONAMES) {
+    my $host = gethostbyaddr(inet_aton($addr), AF_INET());
+    $addr = $host if defined $host;
+  }
+
+  # Time remote-host remote-port request-type zone-requested
+  print "$time $addr $port $qid $type $zone\n";
+}
+
+sub timecvt {
+  my $tai = shift;
+  if (my ($sec, $msec) = $tai =~ /^\@.{8}(.{8})(.{8})/) {
+    return scalar localtime(hex($sec) + hex($msec)/(1<<31)/2 - 10);
+  } else { return "$tai" }
+}

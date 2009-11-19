@@ -1,0 +1,28 @@
+#! /bin/sh
+# call mailstat with apropreate arguments
+
+LOG=${HOME}/mail/log/from
+
+# 3 modes
+# nothing - appends to the .old file, so -o can show again
+# -m      - clears .old file, and appends to it again
+# -o	  - shows old file
+
+if [ ! -f ${LOG} ];  then
+   echo "non-existent ${LOG} file, go away"
+   exit 1
+fi
+
+ARG=-o
+if [ "$1" = "-o" ]; then
+   ARG=
+   LOG=${LOG}.old
+   shift
+elif [ "$1" = "-m" ]; then
+   mv -b -f ${LOG}.old ${LOG}.older
+   ARG=-o
+   shift
+fi
+
+if [ ! -e ${LOG} ]; then touch $LOG; fi
+${HOME}/bin.shared/mailstat --sort=folder ${ARG} ${LOG}

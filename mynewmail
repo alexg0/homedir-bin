@@ -1,0 +1,23 @@
+#! /usr/bin/perl -w
+
+use strict;
+use IO::Pipe;
+
+my $pid = open(NEWMAIL, "wnewmail @ARGV 2>&1|") 
+  or die "could not run wnewmail @ARGV: $!\n";
+
+NEWMAIL->blocking(1);
+
+while (!eof(NEWMAIL)) {
+  $_ = <NEWMAIL>;
+  if (!/Folder is corrupt/ && 
+      !/Incoming mail:/) {
+    print;
+  }
+  else {			# testing only
+    chomp;
+    print "<x>$_</x>\n";
+  }
+}
+
+close(NEWMAIL);

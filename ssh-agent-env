@@ -1,0 +1,91 @@
+#!/bin/bash
+# ssh-agent-env: save and restore agent settings.  
+#
+# save ssh variables into a file.  format of the file is bourne-shell style 
+# env format, and file can be run by the . the file within bourne shell.
+#
+# filename is defaulted to ${HOME}/.ssh/ssh-agent.env, but can be specified
+# on command line
+#
+# usage:
+#    ssh-agent-env      # restore values from the default file
+#    ssh-agent-env -s   # save values from the default file
+#    ssh-agent-env -r   # restore values from the default file
+#    ssh-agent-env file # restore from file
+#      ...... etc .....
+
+default_file=${HOME}/.ssh/ssh-agent.env
+default_mode=restore
+ssh_add=/usr/bin/ssh-add
+
+usage () {
+        echo "please see the file $0."
+}
+
+file=$default_file
+mode=$default_mode
+
+if [ ! -x $ssh_add ]; then
+	echo missing $ssh_add
+	exit 1
+fi
+
+
+
+if [ $# -gt 2 ]; then
+   usage 
+   exit 1
+elif [ $# -gt 0 ]; then
+
+   case $1 in
+   -r) 
+        shift
+        mode=restore
+	;;	
+   -s) 
+        shift
+	mode=save
+	;;
+     *)
+	shift
+	file=$1
+   esac
+fi
+
+if [ "$1" ]; then
+   file=$1
+fi
+
+case $mode in
+
+  save)
+	# save latest agent setting into ~/.ssh/ssh-agent.env
+	# only save (and possibly overwrite, if we have (at least one) 
+        # key in the agent
+	if $ssh_add -l > /dev/null 2>&1; then
+		typeset|egrep SSH_\|DISPLAY > $file
+	fi
+	;;
+  restore)
+	 # fix up ssh-agent variables
+	 # echo ".zshrc: checking for running ssh-agent"
+
+	 # we only restore keys in return value is 2 - can't contact agent
+	 # otherwise, no reason.   we don't test if restore worked, becouse
+	 # there is no other choice anyway
+	 $ssh_add -l > /dev/null 2>&1 
+	 if [ $? -eq 2 ]; then
+	    # can't connect to ssh-agent, need to fix variables
+	    if [ -f $file ]; then
+	       echo . $file
+	       echo export `cut -d= -f1 $file`
+	    fi
+	 fi
+	 ;;
+esac
+	 
+
+
+
+
+

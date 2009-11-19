@@ -1,0 +1,160 @@
+#! /usr/bin/ruby -w
+
+require 'getoptlong'
+require 'find'
+require 'ftools'
+require 'getoptlong.rb'
+
+MAIL_DIR_DEFAULT        = ENV['HOME'] + "/mail" 
+MAIL_SUBDIRS_DEFAULT    = ['favorites', 'spool', 'unread', 'archive' ]
+CONF_FILE_DEFAULT       = MAIL_DIR_DEFAULT + "/swish++.conf"
+MAIL_OUTPUT_DIR_DEFAULT = ENV['HOME'] + "/mail.index"
+MAIL_EXCLUDE_DEFAULT    = []
+VERBOSE_DEFAULT         = FALSE
+
+parser = GetoptLong.new
+
+parser.set_options(['--maildir',          '-m', GetoptLong::REQUIRED_ARGUMENT],
+		   ['--subdirs',          '-s', GetoptLong::REQUIRED_ARGUMENT],
+		   ['--conf',             '-c', GetoptLong::REQUIRED_ARGUMENT],
+		   ['--outputdir',        '-o', GetoptLong::REQUIRED_ARGUMENT],
+		   ['--exclude',          '-x', GetoptLong::REQUIRED_ARGUMENT],
+		   ['--verbose',          '-v', GetoptLong::NO_ARGUMENT],
+		   ['--quiet',            '-q', GetoptLong::NO_ARGUMENT],
+		   ['--help',                   GetoptLong::NO_ARGUMENT],
+		   ['--version',                GetoptLong::NO_ARGUMENT])
+
+$MAIL_DIR        = ''
+$MAIL_SUBDIRS    = []
+$CONF_FILE       = ''
+$MAIL_OUTPUT_DIR = ''
+$MAIL_EXCLUDE    = []
+$VERBOSE         = nil
+
+def usage()
+  print("usage: index-mail\n",                                  \
+        "\t[--maildir|-m ....]\n",                              \
+	"\t[--subdirs|-s ....]   # can be repeated\n",	        \
+	"\t[--conf|-c ....]\n",				        \
+	"\t[--outputdir|-o]",				        \
+	"\t[--exclude|-x]        # can be repeated\n",	        \
+	"\t[--verbose | -v | --quiet | -q ] # opposites\n",	\
+	"\t[--help | --version ] # this screen\n",              \
+	"\n")
+          
+end
+
+def publish_mailbox (file)
+  bSkip = false
+  $MAIL_EXCLUDE.each { |excl| bSkip=true if file =~ /#{excl}/ }
+  if bSkip then
+    print "Skipping #{file}.\n" if $VERBOSE
+    return nil
+  end
+
+  noprefix_name = file.sub(/^$MAIL_DIR/, '')
+  output_name = noprefix_name.gsub(/\//,'.')
+  full_output_dir = $MAIL_OUTPUT_DIR + '/' + output_name
+
+  # make sure directory exists, but is empty
+  if FileTest.directory?(full_output_dir) then
+    dir = Dir.open(full_output_dir)
+    begin
+      dir.each { |f| 
+	File.rm_f( File.join(full_output_dir, f) ) unless f == '.' or f== '..'
+      }
+    ensure
+      dir.close
+    end
+  elsif FileTest.exists?(full_output_dir) then
+    raise "plain file exists";
+  else
+    File.makedirs( full_output_dir );
+  end
+
+  print "Processing #{file}." if $VERBOSE;
+
+  # run splitmail
+  system("splitmail++ -p #{full_output_dir}/msg #{file}") or \
+     raise "splitmail++ error...";
+
+  # rename output files
+  dir = Dir.open(full_output_dir)
+  begin
+    dir.each { |f| 
+      next if f == '.' || f == '..'
+      from = File.join(full_output_dir, f)
+      to   = File.join(full_output_dir, f.sub(/^msg\.0*/, ''))
+      File.rename(from, to) 
+    }
+  ensure
+    dir.close
+  end
+
+  print "..done\n" if $VERBOSE;
+
+  return full_output_dir
+end
+
+begin
+  parser.each_option do |name, arg|
+#    eval "$OPT_#{name.sub(/^--/, {''}).gsub!(/-/, {'_'}).upcase!} = '#{arg}'"
+    case name.sub(/^--/, '')
+      when 'maildir'
+        $MAIL_DIR = arg
+      when 'subdirs'
+        $MAIL_SUBDIRS << arg
+      when 'exclude'
+        $MAIL_EXCLUDE << arg
+      when 'conf'
+        $CONF_FILE = arg
+      when 'outputdir'
+        $MAIL_OUTPUT_DIR = arg
+      when 'verbose'
+        $VERBOSE = true
+      when 'quite'
+        $VERBOSE = false
+      when 'help', 'version'
+        usage();
+      end
+    end
+
+    $MAIL_DIR        = MAIL_DIR_DEFAULT        if $MAIL_DIR.empty?
+    $MAIL_SUBDIRS    = MAIL_SUBDIRS_DEFAULT    if $MAIL_SUBDIRS.empty?
+    $MAIL_EXCLUDE    = MAIL_EXCLUDE_DEFAULT    if $MAIL_EXCLUDE.empty?
+    $CONF_FILE       = CONF_FILE_DEFAULT       if $CONF_FILE.empty?
+    $MAIL_OUTPUT_DIR = MAIL_OUTPUT_DIR_DEFAULT if $MAIL_OUTPUT_DIR.empty?
+    $VERBOSE         = VERBOSE_DEFAULT         if $VERBOSE.nil?
+
+rescue
+  usage();
+  exit(1)
+end
+
+Dir.chdir( $MAIL_DIR )
+published_files = {}
+
+# create new files
+Find.find( *$MAIL_SUBDIRS ) { |f| 
+  output = publish_mailbox( f ) if FileTest.file?(f) 
+  published_files[output] = f if output
+}
+
+# remove any extra files
+dir = Dir.open( $MAIL_OUTPUT_DIR )
+dir.each { |f| 
+  if !(f == '.' || f == '..') then
+    full_file = File.join($MAIL_OUTPUT_DIR, f)
+
+    if (!published_files.key?(full_file) && FileTest.directory?(full_file))
+      print "Removing orphaned mailbox file #{f}..\n" if $VERBOSE
+      system("rm -rf #{full_file}") or raise "rm error";
+    end
+  end 
+}
+
+print "Running indexer...\n" if $VERBOSE;
+system("index++ -c #{$CONF_FILE} #{$MAIL_OUTPUT_DIR}") \
+   or raise "index++ error"
+
+print "\nDone\n" if $VERBOSE;

@@ -1,0 +1,439 @@
+#!/usr/bin/perl -w
+
+use English;
+use IO::File;
+use Carp;
+use strict;
+use File::Path;
+use Getopt::Long;
+use Pod::Usage;
+use FindBin qw($Bin $RealBin);
+
+sub generate_one_gallery ($$$$) {
+  my ($gallery_dir, $gallery_name, $gallery_title, $make_target) = @_;
+
+  # make directory if necessary
+  if (!(-d "$gallery_dir")) {
+    print "mkdir -p $gallery_dir\n";
+    mkpath($gallery_dir, 0700)
+      || croak "internal error: could not mkdir -p $gallery_dir";
+  }
+
+  # cd into gallery directory
+  print "cd $gallery_dir\n";
+  chdir $gallery_dir
+    || croak "internal error: could not chdir to $gallery_dir";
+
+  # run make
+  system("make", "-f",  "$RealBin/Makefile.include",
+	 "BGALLERY_HOME=$RealBin",
+         "GALLERY_NAME=$gallery_name", "GALLERY_TITLE=$gallery_title",
+         $make_target ) == 0
+	   or die "make failed in directory $gallery_dir\n";
+}
+
+sub generate_galleries ($$$@) {
+  my $generate_type = shift;	# possible types are 'all' and 'new'
+  my $gallery_re    = shift;	# gallery to regenerate
+  my $make_passes   = shift;	# make target passes, comma separated, 
+                                # default when blank 
+  my @cfg_galleries = @_;
+  my @full_pass_galleries = ();
+
+  # restrict a list of galleries based on $generate_type and $gallery_re
+
+  @full_pass_galleries 
+    = grep ((!( $generate_type eq 'new' && -d $_->[0]) &&
+	     ($_->[1] =~ /$gallery_re/)), @cfg_galleries);
+#	     (($_->[1] =~ /$gallery_re/) ||
+#	      ($_->[0] =~ /$gallery_re/))), @cfg_galleries);
+
+  my @passes;
+  if ($make_passes) {
+    @passes = split(',',$make_passes)
+  } else {
+    @passes = split(' ',make_info_value('MAKE_PASSES'));
+  }
+
+  for my $pass (@passes) {
+    foreach my $gallery (@full_pass_galleries) {
+      generate_one_gallery($gallery->[0], $gallery->[1], $gallery->[2], $pass);
+    }
+  }
+}
+
+sub validate_galleries (@) {
+  my @galleries = @_;
+
+  # iterate over galeries, doing some quick validations
+  foreach my $gallery (@galleries) {
+    # precondition
+    if (!defined($gallery)) {
+      croak "internal error: \$gallery is undefined";
+    }
+  }
+}
+
+# filter list of galleries
+sub filter_gallery_list ($$@) {
+  my $gallery_re = shift;
+  my $gallery_ignore_re = shift;
+  my @galleries  = @_;
+
+  my @results = grep( ((!defined $gallery_re || $_ =~ /$gallery_re/) &&
+		       (!defined $gallery_ignore_re
+			|| $_ !~ /$gallery_ignore_re/)), @galleries );
+
+  return @results
+}
+
+# print list of galleries
+sub print_gallery_list ($$$@) {
+  my $print_desc = shift;
+  my $gallery_re = shift;
+  my $gallery_ignore_re = shift;
+  my @galleries  = @_;
+
+  print "requested galleries list: $print_desc\n";
+  my @filtered_results = filter_gallery_list($gallery_re, $gallery_ignore_re,
+					    @galleries);
+
+  if (@filtered_results) {
+    foreach my $gallery (@filtered_results) {
+      print "\t$gallery\n"
+    }
+  } else {
+    print "\t{empty}\n"
+  }      
+}
+
+sub get_list_bgalleries (@) {
+  my @cfg_galleries = @_;
+  my @galleries = ();
+
+  foreach my $gallery (@cfg_galleries) {
+    push @galleries, $gallery->[1];
+  }
+
+  return @galleries
+}
+
+sub get_list_full_db_galleries () {
+  my @galleries = ();
+
+  my $full_db_all = make_info_value('FULL_DB_ALL');
+
+  my %hash;
+  for my $fn (split(' ', $full_db_all)) {
+
+    my $fh = new IO::File $fn, "r"
+      or croak "Could not open database component file file $fn: $!\n";
+
+    foreach my $row (<$fh>) {
+      my @row = split (/\t/, $row);
+      my $gallery = $row[0];	# gallery
+      $gallery =~ s|\\|/|g; 	# need to fix '\' to '/'
+      $hash{$gallery}++;	# may as well maintain count
+    }
+  }
+
+  @galleries = sort keys %hash;
+  return @galleries
+}
+
+sub get_list_available (@) {
+  my @cfg_galleries = @_;
+
+  my @bgalleries = get_list_bgalleries(@cfg_galleries);
+  my @full_db_galleries = get_list_full_db_galleries();
+
+  # result we want @full_db_galleries - @bgalleries
+  my @galleries = set_subtract(\@full_db_galleries, \@bgalleries);
+
+  return @galleries;
+}
+
+sub get_list_invalid (@) {
+  my @cfg_galleries = @_;
+
+  my @bgalleries = get_list_bgalleries(@cfg_galleries);
+  my @full_db_galleries = get_list_full_db_galleries();
+
+  # invalid galleris are the galleries that are listed in @bgallery
+  # but are not in @full_db_galleries.  This is opposite of avilable
+  #
+  # result we want @bgalleries - @full_db_galleries
+  my @galleries = set_subtract(\@bgalleries, \@full_db_galleries);
+
+  return @galleries;
+}
+
+# check list of galleries, and die if any are invalid
+# ie, are not defined in the export file
+# can be over-riden with a first argument to warn or error
+sub check_galleries ($$@) {
+  my ($force, $gallery_re, @galleries) = @_;
+
+  my @invalid_galleries = get_list_invalid(@galleries);
+  my @filtered_invalid = filter_gallery_list($gallery_re, undef,
+					     @invalid_galleries);
+
+  if (@filtered_invalid) {
+    print_gallery_list( "invalid", undef, undef, @filtered_invalid);
+
+    if ($force) {
+      warn "Invalid galleries found, proceeding at your own risk.\n";
+    } else {
+      die "Aborting generate due to invalid galleries. " .
+	"Try -forcegenerate.\n";
+    }
+    # this point will not be reached
+  }
+  # exiting successfully
+}
+
+# subtract list pointed to by $rRhs from list pointed to by $rLhs
+# returns a list
+sub set_subtract($$) {
+  my ($rLhs, $rRhs) = @_;
+
+  my %rhs_hash = map {$_ => 0} @$rRhs;
+  my @result = grep {!exists $rhs_hash{$_}} @$rLhs;
+
+  return @result
+}
+
+# returns hash of values that are result of running make info
+sub get_make_info () {
+
+  my $cmd = "make -f $RealBin/Makefile.include BGALLERY_HOME=$RealBin info";
+
+  my $result = `$cmd` or croak "could not run 'make info'";
+
+  # split results into lines
+  my @raw_results = split(/\n/, $result);
+  # leave only VAR = VAL type lines, and remove eny echo statements
+  my @results  = grep (!/echo/ && /=/, @raw_results);
+  # turn results into a hash
+  my %info = map { split(/\s*=\s*/, $_, 2) } @results;
+
+  return %info;
+}
+
+my %make_info_hash;
+sub make_info_value ($) {
+  my $key = shift;
+
+  %make_info_hash = get_make_info ()
+    or croak "make_info_value: get_make_info() failed"
+      if ! %make_info_hash;
+
+  return $make_info_hash{$key}
+}
+
+# needs to be global for eval to work
+my @galleries = undef;
+
+# global setting
+$::VERBOSE = 0;
+
+sub main () {
+  # load init file which should define @galleries
+  acquire("$ENV{HOME}/.bgallery/galleries");
+
+  # make stdout unbuffered to sync output with make's output
+  select(STDOUT); $| = 1;
+
+  #
+  # Process commandline arguments.
+  #
+
+  my ($o_help, $o_man, $o_verbose, $o_forcegenerate,
+      $o_generate, $o_generate_new, $o_gallery_re, 
+      $o_ignore_gal_re, $o_ignore_gal_extra_re,
+      $o_listfulldbgalleries, $o_listbgalleries, $o_listavialable,
+      $o_listinvalid, $o_make_passes);
+
+  GetOptions('help|?'              => \$o_help, 
+	     'man'                 => \$o_man,
+	     'verbose'             => \$o_verbose,
+	     'listfulldbgalleries' => \$o_listfulldbgalleries,
+	     'listbgalleries'      => \$o_listbgalleries,
+	     'listavailable'       => \$o_listavialable,
+	     'listinvalid|validate' => \$o_listinvalid,
+	     'generate'            => \$o_generate,
+	     'forcegenerate'       => \$o_forcegenerate,
+	     'newonly|generatenew' => \$o_generate_new,
+	     'makepasses|m=s'      => \$o_make_passes,
+	     'gallery|g=s'         => \$o_gallery_re,
+	     'ignore_gal=s'        => \$o_ignore_gal_re,
+	     'exclude_gal|x=s'     => \$o_ignore_gal_extra_re,
+	    )
+
+    or pod2usage(2);
+  $#ARGV == -1 or pod2usage(2);	# no extra args
+  pod2usage(1) if $o_help;
+  pod2usage(-exitstatus => 0, -verbose => 2) if $o_man;
+
+  $::VERBOSE++ if ($o_verbose);
+
+  validate_galleries ();
+
+  # not specifying $o_gallery_re is equivalent to specifying blank one
+  $o_gallery_re = "" unless defined $o_gallery_re;
+
+  # provide default gallery ignore expression (may be move to make?)
+  # $o_ignore_gal_extra_re may be left undefined
+  $o_ignore_gal_re = '\W(?:temp|hardcopy)\W' unless defined $o_ignore_gal_re;
+
+  # create combined ignore expression
+  my $ignore_gal_re;
+  $ignore_gal_re .= "($o_ignore_gal_re)" if defined $o_ignore_gal_re;
+  $ignore_gal_re .= "|" if defined $o_ignore_gal_re 
+    && defined $o_ignore_gal_extra_re;
+  $ignore_gal_re .= "($o_ignore_gal_extra_re)" 
+    if defined $o_ignore_gal_extra_re;
+
+  if ($o_listfulldbgalleries) {
+    print_gallery_list( "full database", 
+			$o_gallery_re, $ignore_gal_re,
+			get_list_full_db_galleries() );
+    exit 0;
+  } elsif ($o_listbgalleries) {
+    print_gallery_list( "bgalleries", 
+			$o_gallery_re, $ignore_gal_re,
+			get_list_bgalleries(@galleries) );
+    exit 0;
+  } elsif ($o_listavialable) {
+    print_gallery_list( "available",
+			$o_gallery_re, $ignore_gal_re,
+			get_list_available(@galleries) );
+    exit 0;
+  } elsif ($o_listinvalid) {
+    print_gallery_list( "invalid", 
+			$o_gallery_re, $ignore_gal_re,
+			get_list_invalid(@galleries) );
+    exit 0;
+  } elsif ($o_generate_new) {
+    check_galleries ($o_forcegenerate, $o_gallery_re, @galleries);
+    generate_galleries('new', $o_gallery_re, $o_make_passes, @galleries);
+    exit 0;
+  } else { # generate
+    check_galleries ($o_forcegenerate, $o_gallery_re, @galleries);
+    generate_galleries('all', $o_gallery_re, $o_make_passes, @galleries);
+    exit 0;
+  }
+}
+
+# read in configuration file
+# see http://www.usenix.org/publications/perl/perl13.html
+sub acquire ($) {
+  my($file) = @_;
+  open(FILE, $file) || die "Failed to open $file\n";
+  my @lines = <FILE>;
+  close(FILE);
+  eval("@lines");
+  die "Failed to eval() file $file:\n$@\n" if ($@);
+}
+
+main();
+0;
+
+__END__
+=head1 NAME
+
+bgallery - Barsook Automatic Gallery generator
+
+=head1 SYNOPSIS
+
+bgallery [options]
+
+ Options:
+
+   -help                  brief help message
+
+   -man                   full documentation
+
+   -verbose               be more verbose
+
+   -listfulldbgalleries   list all tp4.dump galleries
+
+   -listbgalleries        list all bgallerie exposed galleries
+
+   -listavailable         list all galleries not in galleries, but in tp4.dump
+
+   -listinvalid           list all invalid galleries, galleries listed in 
+   -validate                galleries file, but not availabe in tp4.dump
+
+   -forcegenerate         ignore validation error, and proceed with generate
+   -generate              generates a galleries
+   -newonly|generatenew   generates only new galleries
+   -makepass <t1>[,<t2>]  use make passes specified instaed of default list
+	                  (quick quick2 all)
+   -gallery|g <gal_re>    generates only galleries matching gal_re (re ok)
+
+   -ignore_gal <gal_re>   ignore all galleries matching gal_re (re ok)
+   -exclude_gal <gal_re>  ignore more galleries matching gal_re (re ok)
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=item B<-verbose>
+
+Makes bgallery a bit more verbose.
+
+=item B<-generate>
+
+Generates any galleries needing generation.  This is a DEFAULT operation.
+
+=item B<-newonly|generatenew>
+
+Generates only new galleries.
+
+=item B<-galllery|g <galname>>
+
+Restrict operations only to galleries matching galname (re ok).  TODO:
+have a way to negate criteria
+
+=item B<-ignore_gal <gal_re>>
+
+Specifies an ignore regular expression for galleries.  By default any
+galleries that match '\W(?:temp|hardcopy)\W' are ignored.  The purpose is to
+provide a way to create workspace galleries in ThumbPlus without
+poluting a list here.  The regular expression above ignores any galleries that contains whole words temp or hardcopy in the name.
+
+=item B<-exclude_gal <gal_re>>
+
+Specified more galleries to ignore.  These is meant to be specified by
+the user.  Prior setting should be left as default.
+
+=item B<-listfulldbgalleries>
+
+List all tp4.dump galleries.
+
+=item B<-listbgalleries>
+
+List all bgallerie exposed galleries
+
+=item B<-listavailable>
+
+List all galleries not in galleries, but in tp4.dump.
+
+=back
+
+=head1 DESCRIPTION
+
+B<This program> will regerate all galleries specified in the config files.
+
+... more info forthcoming ...
+
+=cut

@@ -1,0 +1,39 @@
+#!/bin/sh
+
+echo .::127.53.0.1
+
+sort -u | awk '
+  BEGIN { FS = ":"; OFS = ":" }
+  {
+    c = substr($0,1,1)
+    q = substr($1,2)
+
+    if (c == "#") next
+    if ($1 == "Z.") next
+    if ($1 == "&.") next
+    if (($1 == "") && ($2 == ".")) next
+    if (c == "+") {
+      ip[q] = $2 ":" ip[q]
+      next
+    }
+    if (c == "&") {
+      ns[q] = substr($3,1,length($3) - 1) ":" ns[q]
+      next
+    }
+    print "weird line: " $0
+    exit 1
+  }
+  END {
+    for (q in ns) {
+      split(ns[q],x)
+      for (i in x) {
+        split(ip[x[i]],y)
+        for (j in y) {
+          if (y[j] != "") {
+            print "&" q "::" y[j]
+          }
+        }
+      }
+    }
+  }
+'

@@ -1,0 +1,484 @@
+#! /usr/bin/ruby1.8 -w
+
+require 'getoptlong'
+require 'find'
+require 'fileutils'
+require 'ftools'
+require 'getoptlong.rb'
+require 'digest/md5'
+require 'time'
+
+MAIL_DIR_DEFAULT        = File.join(ENV['HOME'], "mail")
+MAIL_OUTPUT_DIR_DEFAULT = File.join(ENV['HOME'], "mail.index")
+MAIL_SUBDIRS_DEFAULT    = %w( spool favorites sent archive unread )
+MAIL_EXCLUDE_DEFAULT    = %w( zappy mindlist nlptalk junk craigslist )
+INDEXER_TOOL_DEFAULT    = 'namazu'
+MAX_SIZE_DEFAULT        = 200*1024
+INDEXES_DIR_DEFAULT     = File.join(ENV['HOME'], "/fulltext/index/mail")
+CONF_DIR_DEFAULT        = File.join(ENV['HOME'], "fulltext/conf")
+CONF_FILE_DEFAULT_MAP   = {'swish++'  => 
+                               File.join(CONF_DIR_DEFAULT, "swish++.conf"),
+                           'namazu'   => 
+		               File.join(CONF_DIR_DEFAULT + "mknmzrc.mail") }
+SKIP_SYMLINKS_DEFAULT   = true
+VERBOSE_DEFAULT         = false
+DELDUPSONLY_DEFAULT     = false
+FULLEXTRACT_DEFAULT     = false
+
+
+$MAIL_DIR        = nil
+$MAIL_SUBDIRS    = []
+$CONF_FILE       = nil
+$INDEXER_TOOL    = nil
+$INDEXES_DIR     = nil
+$MAIL_OUTPUT_DIR = nil
+$MAIL_EXCLUDE    = []
+$VERBOSE         = nil
+$DELDUPSONLY     = nil
+$FULLEXTRACT     = nil
+$SKIP_SYMLINKS   = nil
+$MAX_SIZE        = nil
+
+def usage()
+  print("usage: index-mail\n",                                  \
+        "\t[--maildir|-m ....]\n",                              \
+	"\t[--subdirs|-s ....]   # can be repeated\n",	        \
+	"\t[--conf|-c ....]\n",				        \
+	"\t[--tool|-t ....]\n",			                \
+	"\t[--symlinks|-s skip/dontskip",			\
+	"\t[--outputdir|-o]\n",				        \
+	"\t[--indexes|-i]\n",				        \
+	"\t[--exclude|-x]        # can be repeated\n",	        \
+	"\t[--deletedupsonly|-d]\n"                             \
+	"\t[--fullextract|-f]\n"                                \
+	"\t[--verbose | -v | --quiet | -q ] # opposites\n",	\
+	"\t[--help | --version ] # this screen\n",              \
+	"\n")
+          
+end
+
+def parse_arguments 
+  parser = GetoptLong.new
+
+  parser.set_options(['--maildir',        '-m', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--subdirs',        '-s', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--conf',           '-c', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--outputdir',      '-o', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--exclude',        '-x', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--tool',           '-t', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--symlinks',       '-l', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--maxsize',        '-z', GetoptLong::REQUIRED_ARGUMENT],
+		     ['--deldupsonly',    '-d', GetoptLong::NO_ARGUMENT],
+		     ['--fullextract',    '-f', GetoptLong::NO_ARGUMENT],
+		     ['--verbose',        '-v', GetoptLong::NO_ARGUMENT],
+		     ['--quiet',          '-q', GetoptLong::NO_ARGUMENT],
+		     ['--help',                 GetoptLong::NO_ARGUMENT],
+		     ['--version',              GetoptLong::NO_ARGUMENT])
+  
+  parser.each_option { |name, arg|
+    case name.sub(/^--/, '')
+    when 'maildir'
+      $MAIL_DIR = arg
+    when 'subdirs'
+      $MAIL_SUBDIRS << arg
+    when 'exclude'
+      $MAIL_EXCLUDE << arg
+    when 'conf'
+      $CONF_FILE = arg
+    when 'outputdir'
+      $MAIL_OUTPUT_DIR = arg
+    when 'maxsize'
+      $MAX_SIZE = arg
+    when 'tool'
+      raise "invalid --tool" if !CONF_FILE_DEFAULT_MAP.key?(arg)
+      $INDEXER_TOOL = arg 
+    when 'indexes'
+      $INDEXES_DIR = arg
+    when 'symlinks'
+      $SKIP_SYMLINKS = arg =~ /^skip/
+    when 'verbose'
+      $VERBOSE = true
+    when 'quiet'
+      $VERBOSE = false
+    when 'deldupsonly'
+      $DELDUPSONLY = true
+    when 'fullextract'
+      $FULLEXTRACT = true
+    when 'quite'
+      $VERBOSE = false
+    when 'help', 'version'
+      usage();
+    else
+      raise "unhandled arg: --name arg"
+    end
+  }
+
+  $MAIL_DIR        = MAIL_DIR_DEFAULT        if $MAIL_DIR.nil?
+  $MAIL_SUBDIRS    = MAIL_SUBDIRS_DEFAULT    if $MAIL_SUBDIRS.empty?
+  $MAIL_EXCLUDE    = MAIL_EXCLUDE_DEFAULT    if $MAIL_EXCLUDE.empty?
+  $MAIL_OUTPUT_DIR = MAIL_OUTPUT_DIR_DEFAULT if $MAIL_OUTPUT_DIR.nil?
+  $VERBOSE         = VERBOSE_DEFAULT         if $VERBOSE.nil?
+  $DELDUPSONLY     = DELDUPSONLY_DEFAULT     if $DELDUPSONLY.nil?
+  $FULLEXTRACT     = FULLEXTRACT_DEFAULT     if $FULLEXTRACT.nil?
+  $INDEXER_TOOL    = INDEXER_TOOL_DEFAULT    if $INDEXER_TOOL.nil?
+  $INDEXES_DIR     = INDEXES_DIR_DEFAULT     if $INDEXES_DIR.nil?
+  $SKIP_SYMLINKS   = SKIP_SYMLINKS_DEFAULT   if $SKIP_SYMLINKS.nil?
+  $MAX_SIZE        = MAX_SIZE_DEFAULT        if $MAX_SIZE.nil?
+  $CONF_FILE       = CONF_FILE_DEFAULT_MAP[$INDEXER_TOOL] if $CONF_FILE.nil?
+
+rescue
+  usage();
+  exit(1)
+end
+
+
+def publish_mailbox (file, bNop)
+  bSkip = false
+  # ignore lock files
+  return nil if file =~ /\.lock$/
+  # and handle explicit exclusions
+  $MAIL_EXCLUDE.each { |excl| bSkip=true if file =~ /#{excl}/ }
+  if bSkip then
+    print "Skipping #{file}.\n" if $VERBOSE
+    return nil
+  end
+
+  noprefix_name = file.sub(/^$MAIL_DIR/, '')
+  output_name = noprefix_name.gsub(/\//,'.')
+  full_output_dir = File.join($MAIL_OUTPUT_DIR, output_name)
+
+  print "Processing #{file}." if $VERBOSE
+
+  # figure out if folder been updated since last time directory been updated
+  timestamp_file = File.join( full_output_dir, "timestamp" )
+  file_time = File.mtime(file)
+  timestamp_file_time = FileTest.exists?(timestamp_file) ? \
+      File.mtime(timestamp_file) : nil;
+
+  # skip (bNop = true) if timestamp is newer or same as file
+  # also if timestamp_file_time is nil, don't skip
+  # also, if FULLEXTRACT don't skip either
+  bNop = true if (!$FULLEXTRACT && !timestamp_file_time.nil? && 
+		  timestamp_file_time >= file_time)
+
+  if not FileTest.directory?(full_output_dir) or not bNop then
+    # make sure directory exists, but is empty
+    if FileTest.directory?(full_output_dir) then
+      # print "t1"
+#      File.rm_f( Dir.glob("#{full_output_dir}/*") )
+      Dir.glob("#{full_output_dir}/*").each{ |fn| File.rm_f(fn) }
+      # print "t2"
+      print ".d." if $VERBOSE;
+    elsif FileTest.exists?(full_output_dir) then
+      raise "plain file exists";
+    else
+      File.makedirs( full_output_dir );
+    end
+
+    # run splitmail
+    system("splitmail++ -p #{full_output_dir}/msg #{file}") or \
+       raise "splitmail++ error...";
+    print "s." if $VERBOSE;
+
+    number_msgs = 0
+    # rename output files
+    Dir.foreach(full_output_dir) { |fn| 
+      next unless fn =~ /[0-9]+/
+      from = File.join(full_output_dir, fn)
+      to   = File.join(full_output_dir, fn.sub(/^msg\.0*/, ''))
+      File.rename(from, to) 
+      # delete files that are too large
+      if FileTest.size(to) > $MAX_SIZE then
+	msg_file_delete(to, "large")
+      else
+	number_msgs+=1
+      end
+    }
+    print "r." if $VERBOSE;
+
+    # get rid of DON.T DELETE THIS MESSAGE -- FOLDER INTERNAL DATA file
+    fn = File.join(full_output_dir, "1")
+    re = /DON.T DELETE THIS MESSAGE -- FOLDER INTERNAL DATA/
+    subject = nil
+    if FileTest.exists?(fn) \
+      and (subject=get_message_field(fn,'subject')) \
+      and re.match(subject) then
+      File.rm_f(fn)
+      number_msgs-=1
+    end
+
+    # update utimes (mailutime)
+    if number_msgs > 0 then
+      Dir.foreach( full_output_dir ) { |fn|
+	next unless fn =~ /[0-9]+/ # our files
+	mail_utime( File.join(full_output_dir, fn) )
+      }
+    end
+    print "u." if $VERBOSE;
+
+    # touch timestamp_file
+    File.open(timestamp_file, File::CREAT|File::TRUNC) {}
+  else
+    print " (nop)" if $VERBOSE;
+  end
+
+  print "..done\n" if $VERBOSE;
+    
+  return full_output_dir
+end
+
+def mail_utime (msg_fn)
+  msg_date_str = get_message_field(msg_fn,"date")
+  if !msg_date_str.nil? then
+    msg_date = Time.rfc2822(msg_date_str) \
+       rescue Time.parse(msg_date_str) rescue nil
+    # more error handling, skip if no date
+    File.utime( msg_date, msg_date, msg_fn ) if !msg_date.nil?
+  end
+end
+		
+def file_has_match (fn, re)
+
+  bHasMatch = false
+  File.open(fn) { |f| 
+    while line = f.gets 
+      next unless re.match(line)
+      bHasMatch = true;
+      break
+    end
+  }
+  return bHasMatch	  
+end		      
+
+
+def get_file_id_md5 (full_fn)
+
+  md5="";
+  File.open(full_fn) {|f|
+    lines = f.readlines();
+    md5 = Digest::MD5::hexdigest(lines.join);
+  }
+  return md5
+end
+
+HEADER_CACHE = {}
+
+def get_message_field(fn, field)
+# parts and ideas borrowed from /usr/lib/ruby/1.8/mailread.rb
+
+
+  header = HEADER_CACHE[fn];
+
+  # cache results of headers
+  if header.nil? then
+
+    header = {};
+
+    field.capitalize!
+    # read the header in
+    File.open(fn) {|f|
+      attr = nil
+      while line = f.gets
+	line.chop!
+	next if /^From /=~line	# skip From-line
+	break if /^$/=~line	# end of header
+
+	# optimization.  if we already got the field (and finished
+	# reading it), don't worry about reading the rest of the headers
+
+	# break if attr != field && header.has_key?(field)
+
+	if /^(\S+?):\s*(.*)/=~line
+	  (attr = $1).capitalize!
+	  header[attr] = $2
+	elsif attr
+	  line.sub!(/^\s*/, '')
+	  header[attr] += "\n" + line
+	end
+      end
+    }
+    HEADER_CACHE[fn] = header
+  end
+
+  return header[field]
+end
+
+
+def get_file_id_message_id (full_fn)
+  message_id = get_message_field(full_fn, 'message-id')
+end
+
+# TODO: seems to prefer MD5, should not
+def get_file_id (filename)
+  message_id = get_file_id_message_id(filename)
+
+  # handle missing message id by doing MD5
+  if message_id.nil?
+    message_id = get_file_id_md5(filename)
+  end
+
+  return message_id
+end
+
+
+def get_md5sum_dir (dirname)
+  # for each file in the directory, returns a hash of filenames
+
+  md5_hash_fn = File.join(dirname, "message_ids")
+
+  map = {}
+
+  # see if we still have message_ids from before
+  if FileTest::exists?(md5_hash_fn) then
+    fn = nil
+    id = nil
+    File.foreach(md5_hash_fn) { |line|
+      fn, id = line.split("\t",2)
+      next if fn =~ /\//	# check for old-style full pathes
+      map[fn] = id
+    }
+    # got something, if not try again from actual files
+  end
+  
+  # did not get anything from the cache, have to actually read messages
+  if map.empty? then
+    id = ""			# performance optimization
+    Dir.foreach(dirname) { |fn|
+      next unless fn =~ /[0-9]+/
+      full_fn = File.join(dirname, fn)
+      if FileTest.file?(full_fn) then
+	id = get_file_id(full_fn) 
+	map[fn] = id
+      end
+    }
+
+    # make map persistent
+    File.open(md5_hash_fn, "w") { |f|
+      map.each { |fn, id| 
+	f.print(fn,"\t",id,"\n")
+      }
+    }
+  end
+
+  # return map with dirname in there
+  ##
+  ## full_path_map = map.collect { |fn,id| Hash[File.join(dirname,fn), id] }
+
+  full_path_map = {}
+  map.each { |fn,id| full_path_map[File.join(dirname,fn)] = id }
+  return full_path_map
+end
+
+def msg_file_delete (filename, comment)
+ 
+  if FileTest.file?(filename) then
+    File.rm_f( filename ) 
+    print "\n  removed #{comment} file #{filename}..." if $VERBOSE
+  end
+
+end
+
+def hash_dup_val_keys (hash)
+  
+  all_keys = []
+  nondup_keys = []
+
+  all_keys = hash.keys
+  nondup_keys = hash.invert.values
+  hash2 = {}
+  hash2.update(hash)
+  nondup_keys.each{ |k| hash2.delete(k) }
+  
+  return hash2.keys
+
+end
+
+  
+STDOUT.sync= true
+
+parse_arguments()
+
+Dir.chdir( $MAIL_DIR )
+
+
+published_files = []
+published_files_map = {}
+
+# create new files
+
+Find.find( *$MAIL_SUBDIRS ) { |f| 
+  if FileTest.file?(f) then
+    next if $SKIP_SYMLINKS && FileTest.symlink?(f)
+    output = publish_mailbox( f, $DELDUPSONLY)
+    if !output.nil? then
+      published_files << output
+      published_files_map[output] = f
+    end
+  end
+}
+
+# remove any extra orphaned mailboxes
+Dir.foreach( $MAIL_OUTPUT_DIR ) { |fn| 
+  next if fn == '.' or fn == '..' or fn == 'indexes'
+  
+  full_file = File.join($MAIL_OUTPUT_DIR, fn)
+    
+  if (!published_files_map.key?(full_file) && FileTest.directory?(full_file))
+    print "Removing orphaned mailbox file #{fn}..\n" if $VERBOSE
+    FileUtils.rm_rf(full_file) or raise "rm error";
+  end 
+}
+
+# remove duplicate messages from the search, by removing the files
+md5_file_map = {}
+published_files.each { |file|
+
+  print "Computing MD5 digests for #{published_files_map[file]}.." if $VERBOSE;
+
+  dirname, basename = File.split(file)
+  
+
+  # get md5sum of all files in directory
+  dir_file_md5_map = get_md5sum_dir(file)
+  
+  # get list of duplicate files (in same dir)
+#  dup_files = hash_dup_val_keys(dir_file_md5_map)
+
+  dup_files = dir_file_md5_map.values - dir_file_md5_map.invert.keys
+
+  # intersection of md5 values
+  (dir_file_md5_map.values & md5_file_map.keys).each { |md5|
+    f = dir_file_md5_map.index(md5)
+    dup_files << f
+    dir_file_md5_map.delete(f)    
+  }
+
+  # and actually delete the files
+  print ".#{dup_files.length}." if $VERBOSE and dup_files.length > 0;
+  dup_files.each { |f| 
+    msg_file_delete(f, "dup")
+    dir_file_md5_map.delete(f)
+  }
+
+  md5_file_map.update(dir_file_md5_map.invert)
+  print "..done\n" if $VERBOSE;
+}
+
+dir = "#{$MAIL_OUTPUT_DIR}/indexes"
+Dir.mkdir(dir) unless FileTest.directory?(dir)
+
+print "Running #{$INDEXER_TOOL} ...\n" if $VERBOSE;
+cmd = ''
+case $INDEXER_TOOL
+when 'namazu'
+  cmd = "mknmz -f #{$CONF_FILE} -O #{$INDEXES_DIR} " \
+        "--mailnews #{$MAIL_OUTPUT_DIR}";
+when 'swish++'
+  cmd = "index++ -c #{$CONF_FILE} #{$MAIL_OUTPUT_DIR}"
+else
+  raise "unhandled tool: #{$INDEXER_TOOL}"
+end
+
+system( cmd ) or raise "#{$INDEXER_TOOL} error"
+
+print "\nDone\n" if $VERBOSE;

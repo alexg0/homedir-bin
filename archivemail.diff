@@ -1,0 +1,131 @@
+*** /tmp/alexg/archivemail57GIlJ	Wed Apr 21 16:24:09 2004
+--- /tmp/alexg/archivemail57GVvP	Wed Apr 21 16:24:09 2004
+***************
+*** 151,157 ****
+      only_archive_read    = 0
+      output_dir           = None
+      preserve_unread      = 0
+-     purge_deleted        = 0
+      quiet                = 0
+      read_buffer_size     = 8192
+      script_name          = os.path.basename(sys.argv[0])
+--- 151,156 ----
+***************
+*** 171,182 ****
+  
+          """
+          try:
+!             opts, args = getopt.getopt(args, '?D:S:Vd:hno:qs:upv', 
+                               ["date=", "days=", "delete", "dry-run", "help",
+                               "include-flagged", "no-compress", "output-dir=",
+                               "archive-name=",
+!                              "preserve-unread", "purge-deleted",
+!                              "quiet", "size=", "suffix=",
+                               "verbose", "version", "warn-duplicate"])
+          except getopt.error, msg:
+              user_error(msg)
+--- 170,180 ----
+  
+          """
+          try:
+!             opts, args = getopt.getopt(args, '?D:S:Vd:hno:qs:uv', 
+                               ["date=", "days=", "delete", "dry-run", "help",
+                               "include-flagged", "no-compress", "output-dir=",
+                               "archive-name=",
+!                              "preserve-unread", "quiet", "size=", "suffix=",
+                               "verbose", "version", "warn-duplicate"])
+          except getopt.error, msg:
+              user_error(msg)
+***************
+*** 217,224 ****
+                  self.min_size = string.atoi(a)
+              if o in ('-u', '--preserve-unread'):
+                  self.preserve_unread = 1
+-             if o in ('-p', '--purge-deleted'):
+-                 self.purge_deleted = 1
+              if o in ('-v', '--verbose'):
+                  self.verbose = 1
+              if o == '--archive-name':
+--- 215,220 ----
+***************
+*** 759,765 ****
+              elif flag == "S": # (seen): the user has viewed this message
+                  status = status + "R"
+              elif flag == "T": # (trashed): user has moved this message to trash
+!                 x_status = x_status + "D"
+              else:
+                  pass # no whingeing here, although it could be a good experiment
+  
+--- 755,761 ----
+              elif flag == "S": # (seen): the user has viewed this message
+                  status = status + "R"
+              elif flag == "T": # (trashed): user has moved this message to trash
+!                 pass # is this Status: D ? 
+              else:
+                  pass # no whingeing here, although it could be a good experiment
+  
+***************
+*** 794,800 ****
+          elif flag == "\\Seen": # (seen): the user has viewed this message
+              status = status + "R"
+          elif flag == "\\Deleted": # (trashed): user has moved this message to trash
+!             x_status = x_status + "D"
+          else:
+              pass # no whingeing here, although it could be a good experiment
+      if flags.count("\\Seen") == 0:
+--- 790,796 ----
+          elif flag == "\\Seen": # (seen): the user has viewed this message
+              status = status + "R"
+          elif flag == "\\Deleted": # (trashed): user has moved this message to trash
+!             pass # is this Status: D ? 
+          else:
+              pass # no whingeing here, although it could be a good experiment
+      if flags.count("\\Seen") == 0:
+***************
+*** 812,837 ****
+          vprint("converting imap status into X-Status header '%s'" % x_status)
+          message['X-Status'] = x_status
+  
+- def is_deleted(message):
+-     """return true if the message is marked deleted, false otherwise"""
+-     # MH and mbox mailboxes use the 'X-Status: D' header to indicate  message
+-     # been deleted
+-     x_status = message.get('X-Status')
+-     if x_status and re.search('D', x_status):
+-         vprint("message marked deleted (X-Status header='%s')" % x_status)
+-         return 1
+-     file_name = None
+-     try:
+-         file_name = message.fp.name
+-     except AttributeError:
+-         pass
+-     # maildir mailboxes use the filename suffix to indicate flagged status
+-     if file_name and re.search(":2,.*T.*$", file_name):
+-         vprint("message marked deleted (filename info has 'T')")
+-         return 1
+-     vprint("message is not marked deleted")
+-     return 0
+- 
+  def is_flagged(message):
+      """return true if the message is flagged important, false otherwise"""
+      # MH and mbox mailboxes use the 'X-Status' header to indicate importance
+--- 808,813 ----
+***************
+*** 918,926 ****
+          old = is_older_than_time(time_message, options.date_old_max)
+  
+      # I could probably do this in one if statement, but then I wouldn't
+!     # understand it.
+!     if options.purge_deleted and is_deleted(message):
+!         return 1
+      if not old:
+          return 0
+      if not options.include_flagged and is_flagged(message):
+--- 894,900 ----
+          old = is_older_than_time(time_message, options.date_old_max)
+  
+      # I could probably do this in one if statement, but then I wouldn't
+!     # understand it. 
+      if not old:
+          return 0
+      if not options.include_flagged and is_flagged(message):

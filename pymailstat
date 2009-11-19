@@ -1,0 +1,136 @@
+#!/usr/bin/python -tt
+#
+# pymailstat: Similar to the program 'mailstat' which ships with procmail,
+#             this program displays the number of messages in each mail
+#             folder.  Unlike procmail's mailstat, this program does not
+#             parse procmail's log file; instead, it examines the
+#             mailboxes directly.
+#
+# $Id: pymailstat.in,v 1.5 2003/02/04 16:28:36 sengelha Exp $
+
+import getopt
+import mailbox
+import os
+import string
+import sys
+import time
+
+package = 'pymailstat'
+version = '0.5.3'
+
+# Hack to allow static methods in Python ala ASPN Python Cookbook
+# recipie 52304:
+#   http://aspn.activestate.com/ASPN/Cookbook/Python/Recipe/52304
+class Callable:
+    def __init__(self, anycallable):
+        self.__call__ = anycallable
+
+class MailboxObjFactory:
+    def createFromPath(path):
+        file = open(path)
+        mboxObj = mailbox.PortableUnixMailbox(file)
+        return mboxObj
+
+    createFromPath = Callable(createFromPath)
+
+class Mailbox:
+    def __init__(self, name, mailboxObj):
+        self.__name = name
+        self.__new = 0
+        self.__old = 0
+
+        while 1:
+            mail = mailboxObj.next()
+            if not mail:
+                break
+
+            statusHdr = mail.getheader('Status')
+            if statusHdr and string.find(statusHdr, 'O') != -1:
+                self.__old += 1
+            else:
+                self.__new += 1
+
+    def getName(self):
+        return self.__name
+
+    def getNew(self):
+        return self.__new
+
+    def getOld(self):
+        return self.__old
+
+def createMailbox(path, name):
+    mbox = Mailbox(name, MailboxObjFactory.createFromPath(path))
+
+    # If the mailbox has new e-mails, make sure mtime > atime so mailers
+    # such as mutt know that the mailbox has new e-mails.
+    if mbox.getNew() > 0:
+        now = time.time()
+        os.utime(path, (now, now + 1))
+
+    return mbox
+
+def createMailboxes(dir):
+    mailboxes = []
+    dirs = os.listdir(dir)
+    dirs.sort()
+    for f in dirs:
+        fp = '%s/%s' % (dir, f)
+        if not os.path.islink(fp):
+            mailboxes.append(createMailbox(fp, f))
+    return mailboxes
+
+def createMailboxList():
+    mailboxes = []
+
+    mailboxes.append(createMailbox(os.environ['MAIL'], 'INBOX'))
+    for d in [ '~/.mail/spool' ]:
+        dir = os.path.expanduser(d)
+        if os.path.isdir(dir):
+            mailboxes.extend(createMailboxes(dir))
+
+    return mailboxes
+
+def printUsage():
+    print """Usage: %s [options]
+
+Options:
+  -a, --all      display information about all mailboxes, not just ones
+                 with mail
+  -h, --help     display help and exit
+  -v, --version  display version and exit""" % (package)
+
+def printVersion():
+    print "%s (version %s)" % (package, version)
+
+def main():
+    displayAll = 0
+
+    try:
+        optlist, args = getopt.getopt(sys.argv[1:], 'ahv', ['all', 'help', 'version'])
+    except getopt.GetoptError:
+        printUsage()
+        sys.exit(2)
+
+    for o, a in optlist:
+        if o in ('-a', '--all'):
+            displayAll = 1
+        if o in ('-h', '--help'):
+            printUsage()
+            sys.exit()
+        if o in ('-v', '--version'):
+            printVersion()
+            sys.exit()
+
+    mailboxes = createMailboxList()
+
+    print '%-30s %5s %5s' % ('Mailbox', 'New', 'Old')
+    print '%-30s %5s %5s' % ('-------', '---', '---')
+    for m in mailboxes:
+        if (displayAll == 1 or m.getNew() > 0 or m.getOld() > 0):
+            print '%-30s %5d %5d' % (m.getName(), m.getNew(), m.getOld())
+
+if __name__ == '__main__':
+    main()
+
+# vim:ft=python:

@@ -1,0 +1,332 @@
+#!/usr/bin/perl -w
+
+############# mailstat - analyze procmail-generated LOGFILE ###################
+#
+# Type 'mailstat -h' to see how to use this program
+#
+# (c) 2002, 2003 Max J. Werner <max@home-werner.de>
+#
+# Do with this program whatever you want except for removing the 
+# copyright notice above. Thanks.
+# 
+###############################################################################
+
+use strict;
+use Getopt::Std;
+use Getopt::Long qw(:config no_auto_abbrev bundling gnu_compat);
+use POSIX qw(mktime);
+
+my $program_name = "mailstat";
+my $program_version = "0.8";
+
+sub version {
+    print "mailstat $program_version\n";
+    print "Written by Max J. Werner <max\@home-werner.de>\n\n";
+    print "The newest version of this program is avaliable at\n";
+    print "http://maxwerner.dyndns.org/download.php#mailstat\n";
+    exit(0);
+}
+
+sub usage {
+    my $exit = shift;
+    my $msg = shift;
+    if($exit) {
+	if($msg) {
+	    print "$msg\n";
+	}
+	print "Usage: $program_name [OPTION]... [LOGFILE]\n";
+	print "Type $0 -h for further help\n";
+    } else {
+	print <<_USAGE_;
+Usage: $0 [OPTION]... [LOGFILE]
+Analyze a procmail-generated \$LOGFILE and display
+a summary about the messages delivered to all folders
+
+  --terse, -t        Terse display format
+  --sfilter, -s DATE Date filtering: this is the start date
+  --efilter, -e DATE Date filtering: this is the end date
+                     DATE has to be of the following format: 
+                     YYYY/MM/DD [HH:MM:SS]
+                     If you specify a time you must quote the whole DATE
+  --sort METHOD      Sorts output using the specified METHOD which
+                     is 'folder' to sort by folder name, 'size' to
+                     sort by folder size and 'number' to sort by
+                     number of messages in folder (default)
+  --oldbehav, -o     Move LOGFILE to LOGFILE.old and leave LOGFILE
+                     empty if LOGFILE doesn\'t already end with .old
+  --dispsize SIZE    Display the sizes in SIZE which can be 'mb' for
+                     MBytes, 'kb' for KBytes (default) and 'b' for Bytes
+  --help, -h         Print this help
+  --version, -v      Print version information and exit
+
+When LOGFILE is not given mailstat reads the logfile from STDIN.
+
+_USAGE_
+    }
+    exit($exit);
+}
+
+#  checks date+time string, returns POSIX::mktime() string
+#  if anything is wrong, usage() is called
+#
+sub check_time {
+    # get time & option name
+    my($time, $opt) = @_;
+
+    # check syntax
+    usage(1, "Wrong argument to $opt") 
+	unless $time =~ m@^\d{4}/\d{1,2}/\d{1,2}@;
+
+    my($year, $mon, $mday, $hour, $min, $sec);
+
+    # get date & time strings
+    ($year, $hour) = split(/ /, $time, 2);
+
+    #  get date: year, month, month day
+    ($year, $mon, $mday) = split('/', $year, 3);
+
+    #  get time: hour, minute, second
+    ($hour , $min , $sec) = $hour ? split(/:/, $hour, 3) : (0, 0, 0);
+
+    #  check date & time ranges
+    #  exit w/ usage() if anything is wrong
+    #
+    usage(1, "Wrong argument to $opt")
+	if(($mon < 1) || ( $mon > 12)
+	   || ($mday < 1) || ($mday > 31)
+	   || ($hour < 0) || ($hour > 23)
+	   || ( $min < 0) || ( $min > 59)
+	   || ( $sec < 0) || ( $sec > 59));
+
+    #  finally, return time
+    return mktime($sec, $min, $hour, $mday, $mon-1, $year-1900);
+}
+
+my $skip;
+my $totalnum = 0;
+my $totalsize = 0;
+my ($entry, $size, $key, $tmp, @keys);
+my ($wday, $mon, $mday, $hour, $min, $sec, $year);
+my ($s_time_t, $e_time_t);
+my %months = (
+	      Jan => 0,
+	      Feb => 1,
+	      Mar => 2,
+	      Apr => 3,
+	      May => 4,
+	      Jun => 5,
+	      Jul => 6,
+	      Aug => 7,
+	      Sep => 8,
+	      Oct => 9,
+	      Nov => 10,
+	      Dec => 11
+);
+
+my %folders = ();
+my $longestfoldername = 0;
+my $i;
+
+my $arg_sort = '';
+my $arg_dispsize = '';
+my $arg_sfilter = '';
+my $arg_efilter = '';
+my $arg_terse = 0;
+my $arg_help = 0;
+my $arg_vers = 0;
+my $arg_oldbehav = 0;
+
+if(!GetOptions('sort=s' => \$arg_sort, 'dispsize=s' => \$arg_dispsize, 't|terse' => \$arg_terse, 's|sfilter=s' => \$arg_sfilter, 'e|efilter=s' => \$arg_efilter, 'h|help' => \$arg_help, 'v|version' => \$arg_vers, 'o|oldbehav' => \$arg_oldbehav)) {
+    usage(1);
+}
+
+if($arg_sort ne '' && $arg_sort ne 'size' && $arg_sort ne 'folder' && $arg_sort ne 'number') {
+    usage(1, "Unknown argument to --sort: $arg_sort");
+}
+if($arg_dispsize ne '' && $arg_dispsize ne 'mb' && $arg_dispsize ne 'kb' && $arg_dispsize ne 'b') {
+    usage(1, "Unknown argument to --dispsize: $arg_dispsize");
+}
+
+if($arg_help) {
+    usage(0);
+}
+if($arg_vers) {
+    version;
+}
+
+if($ARGV[1]) {
+    usage(1);
+}
+
+if($arg_sfilter) {
+    $s_time_t = check_time($arg_sfilter , '-s');
+}
+if($arg_efilter) {
+    $e_time_t = check_time($arg_efilter , '-e');
+}
+
+#  log file name
+my $logfile = $ARGV[0];
+
+if(defined($logfile) && (stat($logfile))[7] == 0) {
+    print "No mail arrived since\n";
+    exit(1);
+}
+
+if($logfile) {
+    open(FILE, $logfile) || usage(1,"Could not open $logfile: $!");
+} else {
+    open(FILE, "-") || usage(1,"Could not open STDIN: $!");
+}
+
+if($logfile && $arg_oldbehav) {
+    if($logfile !~ /\.old$/) {
+	open(FILEOLD, ">".$logfile.".old") || usage(1, "Could not open $logfile.old: $!");
+	$arg_oldbehav = 'open';
+    }
+ }
+
+while(<FILE>) {
+    $entry = $_;
+    if($arg_oldbehav && $arg_oldbehav eq 'open') {
+	print FILEOLD $entry;
+    }
+    chomp($entry);
+    if($entry =~ /^\s*>?From.*(\w{3}) (\w{3}) (\d{2}| \d{1}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/ && ($s_time_t || $e_time_t)) {
+	$wday = $1;
+	$mon = $months{$2};
+	$mday = $3;
+	$hour = $4;
+	$min = $5;
+	$sec = $6;
+	$year = $7-1900;
+	my $time_t = POSIX::mktime($sec,$min,$hour,$mday,$mon,$year);
+	if($s_time_t && !($time_t >= $s_time_t)) {
+	    $skip = 1;
+	    next;
+	} else {
+	    $skip = 0;
+	}
+	if($e_time_t && !($time_t <= $e_time_t)) {
+	    $skip = 1;
+	    next;
+	} else {
+	    $skip = 0;
+	}
+    }
+    if(($entry =~ /^  Folder: (.*?)\s*(\d*)$/) && !$skip) {
+	$entry = $1;
+	$size = $2;
+	$folders{$entry}{"number"}++;
+	$folders{$entry}{"size"} += $size;
+	$totalnum++;
+	$totalsize += $size;
+	if(($folders{$entry}{"number"} == 1) && (length($entry) > $longestfoldername)) {
+	    $longestfoldername = length($entry);
+	}
+    }
+}
+
+close FILE;
+if($arg_oldbehav && $arg_oldbehav eq 'open') {
+    open(FILE, ">".$logfile) || usage(1,"Could not open $logfile for writing: $!");
+    close FILE;
+}
+close FILEOLD;
+
+if($arg_dispsize eq 'mb') {
+    $totalsize = sprintf("%.2f", $totalsize/1024/1024);
+} elsif($arg_dispsize ne 'b') {
+    $totalsize = sprintf("%.2f", $totalsize/1024);
+}
+
+if(!$arg_terse) {
+    print "Folder ";
+    print " "x(($longestfoldername-6));
+    if((length($totalnum)-6) >= 1) {
+	print " "x(length($totalnum)-6);
+    }
+    print "Number ";
+    print " "x(length($totalsize)-3);
+    print "Size\n";
+
+    print "------ ";
+    print " "x(($longestfoldername - 6));
+    print "-"x(length($totalnum));
+    if((6-length($totalnum)) >= 1) {
+	print "-"x(6-length($totalnum));
+    }
+    print " ";
+    print "-"x(length($totalsize)+1);
+    if((4-(length($totalsize)+1)) >= 1) {
+	print "-"x(4-(length($totalsize)+1));
+    }
+    print "\n";
+}
+
+if($arg_sort eq 'size') {
+    @keys = sort { $folders{$b}{"size"} <=> $folders{$a}{"size"} } (keys(%folders));
+} elsif($arg_sort eq 'folder') {
+    @keys = sort(keys(%folders));
+} else {
+    @keys = sort { $folders{$b}{"number"} <=> $folders{$a}{"number"} } (keys(%folders));
+}
+
+foreach $key (@keys) {
+    print "$key ";
+    print " "x(($longestfoldername - length($key)) + (length($totalnum) - length($folders{$key}{"number"})));
+    if(((6-length($totalnum)) >= 1) && !$arg_terse) {
+	print " "x(6-length($totalnum));
+    }
+    print $folders{$key}{"number"};
+    print " ";
+if($arg_dispsize eq 'b') { 
+    print " "x(length($totalsize) - length($folders{$key}{"size"}));
+    if(((4-(length($folders{$key}{"size"})+1)) >= 1) && !$arg_terse) {
+	print " "x(4-(length($totalsize)+1));
+    }
+    print $folders{$key}{"size"};
+    print "b\n";
+} elsif($arg_dispsize eq 'mb') {
+    print " "x(length($totalsize) - length(sprintf("%.2f", $folders{$key}{"size"}/1024/1024)));
+    printf "%.2f", $folders{$key}{"size"}/1024/1024;
+    print "M\n";
+} else {
+    print " "x(length($totalsize) - length(sprintf("%.2f", $folders{$key}{"size"}/1024)));
+    printf "%.2f", $folders{$key}{"size"}/1024;
+    print "k\n";
+}
+}
+
+if(!$arg_terse) {
+    print "------ ";
+    print " "x(($longestfoldername - 6));
+    print "-"x(length($totalnum));
+    if((6-length($totalnum)) >= 1) {
+	print "-"x(6-length($totalnum));
+    }
+    print " ";
+    print "-"x(length($totalsize)+1);
+    if((4-(length($totalsize)+1)) >= 1) {
+	print "-"x(4-(length($totalsize)+1));
+    }
+    print "\n";
+
+    print "Total: ";
+    print " "x(($longestfoldername - 6));
+    if((6-length($totalnum)) >= 1) {
+	print " "x(6-length($totalnum));
+    }
+    print $totalnum;
+    if((4-(length($totalsize)+1)) >= 1) {
+	print " "x(4-(length($totalsize)+1));
+    }
+    print " $totalsize";
+    if($arg_dispsize eq 'b') {
+	print "b\n";
+    } elsif($arg_dispsize eq 'mb') {
+	print "M\n";
+    } else {
+	print "k\n";
+    }
+}

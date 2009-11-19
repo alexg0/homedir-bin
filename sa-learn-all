@@ -1,0 +1,20 @@
+#! /bin/sh
+
+cd $HOME/mail
+
+for n in favorites/* spool/mail.* spool/list.*; do
+    echo -n "sa-learn --ham: $n: "
+    result=`sa-learn --ham  --mbox $n --no-rebuild`
+    echo $result..done
+done
+
+for n in spool/*.spam*; do
+    echo -n "sa-learn --spam: $n: "
+    result=`sa-learn --spam  --mbox $n --no-rebuild`
+    echo $result..done
+done
+
+echo -n "sa-learn: rebuilding.."
+sa-learn --rebuild
+echo ".done"
+
