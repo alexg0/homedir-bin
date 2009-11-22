@@ -67,9 +67,6 @@ case $mode in
 	fi
 	;;
   restore)
-	 # fix up ssh-agent variables
-	 # echo ".zshrc: checking for running ssh-agent"
-
 	 # we only restore keys in return value is 2 - can't contact agent
 	 # otherwise, no reason.   we don't test if restore worked, becouse
 	 # there is no other choice anyway
