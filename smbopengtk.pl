@@ -13,6 +13,8 @@ Tool for faffing around with win32/nix style filenames.
 
 =head1 DESCRIPTION
 
+From: http://www.perlmonks.org/?node_id=581979
+
 Lets you:
 
 =over
