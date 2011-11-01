@@ -1,8 +1,8 @@
 #! /bin/bash
 
 d=~/Downloads/scans
-scanner=prn_3rd_fl
-me=$(hostname -s)
+scanner=prn-3rd-fl
+me=$(hostname -s|sed s/-//)
 
 mkdir -p $d || exit 1
 screen -S dell1600 -d -m -L \
