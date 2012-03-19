@@ -1,8 +1,0 @@
-#! /bin/sh
-# watch for incoming mail, without backgrounding
-
-SPOOL=${HOME}/mail/spool
-MBOXES="${SPOOL}/mail.* "
-
-newmail -d -w ${MBOXES}
-
