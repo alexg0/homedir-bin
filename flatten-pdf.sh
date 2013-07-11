@@ -19,7 +19,7 @@ fi
 if [[ -n "$1" ]]; then
   output_file="$1"; shift
 else
-  output_file=$(dirname $input_file)/$(basename $input_file .pdf)${output_infix}.pdf
+  output_file=$(dirname "$input_file")/$(basename "$input_file" .pdf)${output_infix}.pdf
 fi
 
 if [[ -f $output_file ]]; then
@@ -27,5 +27,5 @@ if [[ -f $output_file ]]; then
   exit 1
 fi
 
-$cmd_pdftops $input_file - | ps2pdf14 - $output_file
+$cmd_pdftops "$input_file" - | ps2pdf14 - "$output_file"
 echo $output_file created
