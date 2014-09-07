@@ -9,8 +9,9 @@ screen -ls | grep dell1600 && \
     echo "Already running, not starting." || \
     screen -S dell1600 -d -m \
          dell1600n-net-scan.pl \
-  	  --1815dn --multi-session --listen $scanner --name $me \
-          --scan-dir $d
+         --1815dn --multi-session --listen $scanner --name $me \
+         --force-pdf --format pdf --resolution 300 \
+         --scan-dir $d
 
 echo "Scan daemon status:"
 screen -ls | grep dell1600
