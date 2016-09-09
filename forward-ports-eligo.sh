@@ -8,7 +8,7 @@ ssh_args="-C -N"
 
 local=("-L 54323:whdb.eligoenergy.com:5432"
        "-L 54324:whdb.eligoenergy.com:5432"
-       "-c 3des -D 8527"
+       "-D 8527"
        )
 
 all_ports="${local[*]}"
